@@ -39,10 +39,17 @@ void PythonQt_init_QtSvg(PyObject*);
 void PythonQt_init_QtSql(PyObject*);
 void PythonQt_init_QtNetwork(PyObject*);
 void PythonQt_init_QtCore(PyObject*);
+#ifndef QT_STATIC
 void PythonQt_init_QtWebKit(PyObject*);
+#endif//QT_STATIC
 void PythonQt_init_QtOpenGL(PyObject*);
 void PythonQt_init_QtXml(PyObject*);
 void PythonQt_init_QtUiTools(PyObject*);
+
+#if QT_VERSION >= 0x050000
+void PythonQt_init_QtXmlPatterns(PyObject*);
+void PythonQt_init_QtMultimedia(PyObject*);
+#endif
 
 namespace PythonQt_QtAll
 {
@@ -53,9 +60,15 @@ namespace PythonQt_QtAll
     PythonQt_init_QtXml(0);
     PythonQt_init_QtSvg(0);
     PythonQt_init_QtSql(0);
+#ifndef QT_STATIC
     PythonQt_init_QtWebKit(0);
+#endif//QT_STATIC
     PythonQt_init_QtOpenGL(0);
     PythonQt_init_QtUiTools(0);
+#if QT_VERSION >= 0x050000
+    PythonQt_init_QtXmlPatterns(0);
+    PythonQt_init_QtMultimedia(0);
+#endif
   };
 };
 

@@ -1,24 +1,21 @@
-# PythonQt Tests
-# must be included from PythonQt main CMakeLists
-
 project(PythonQt_Tests)
 
-SET(HEADERS
-	PythonQtTests.h
-)
+# automatically link plugins when linking to a static qt
+# so far only of effect in msys2
+set(CMAKE_AUTOSTATICPLUGINS ON)
 
-SET(SOURCES
-	PythonQtTestMain.cpp
-	PythonQtTests.cpp
-)
+file(GLOB SOURCES *.cpp)
+file(GLOB HEADERS *.h)
+
+if(NOT TARGET ${PythonQt})
+	find_package(${PythonQt} CONFIG REQUIRED)
+endif()
 
 qt_wrap_cpp(GEN_HEADERS ${HEADERS})
 
-add_executable(PythonQtTest ${SOURCES} ${GEN_HEADERS})
+add_executable(${PROJECT_NAME} ${SOURCES} ${GEN_HEADERS})
+target_link_libraries(${PROJECT_NAME} ${PythonQt})
+qt_use_modules(${PROJECT_NAME} Test Gui)
 if(PythonQt_Qt5)
-	qt_use_modules(PythonQtTest Test Gui Widgets)
-else()
-	qt_use_modules(PythonQtTest Test Gui)
+	qt_use_modules(${PROJECT_NAME} Widgets)
 endif()
-
-target_link_libraries(PythonQtTest ${PythonQt} ${PYTHON_LIBRARIES})

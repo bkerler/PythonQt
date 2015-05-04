@@ -46,13 +46,7 @@
 #include "PythonQtSignal.h"
 #include "PythonQtClassInfo.h"
 #include "PythonQtConversion.h"
-#include "PythonQtClassWrapper.h"
 
-PythonQtClassInfo* PythonQtInstanceWrapperStruct::classInfo()
-{
-  // take the class info from our type object
-  return ((PythonQtClassWrapper*)Py_TYPE(this))->_classInfo;
-}
 
 static void PythonQtInstanceWrapper_deleteObject(PythonQtInstanceWrapper* self, bool force = false) {
 
@@ -64,7 +58,14 @@ static void PythonQtInstanceWrapper_deleteObject(PythonQtInstanceWrapper* self, 
     // we own our qobject, so we delete it now:
     delete self->_obj;
     self->_obj = NULL;
-    if (force || self->_ownedByPythonQt) {
+
+    // if this object is reference counted, we just unref it:
+    PythonQtVoidPtrCB* unrefCB = self->classInfo()->referenceCountingUnrefCB();
+    if (unrefCB) {
+      (*unrefCB)(self->_wrappedPtr);
+      self->_wrappedPtr = NULL;
+    }
+    else if (force || self->_ownedByPythonQt) {
       int type = self->classInfo()->metaTypeId();
       if (self->_useQMetaTypeDestroy && type>=0) {
         // use QMetaType to destroy the object
@@ -139,6 +140,7 @@ static PyObject* PythonQtInstanceWrapper_new(PyTypeObject *type, PyObject * /*ar
     self->_ownedByPythonQt = false;
     self->_useQMetaTypeDestroy = false;
     self->_isShellInstance = false;
+    self->_shellInstanceRefCountsWrapper = false;
   }
   return (PyObject *)self;
 }
@@ -153,15 +155,22 @@ int PythonQtInstanceWrapper_init(PythonQtInstanceWrapper * self, PyObject * args
   // we are called from python, try to construct our object
   if (self->classInfo()->constructors()) {
     void* directCPPPointer = NULL;
-    PythonQtSlotFunction_CallImpl(self->classInfo(), NULL, self->classInfo()->constructors(), args, kwds, NULL, &directCPPPointer);
+    PythonQtPassThisOwnershipType ownership;
+    PythonQtSlotFunction_CallImpl(self->classInfo(), NULL, self->classInfo()->constructors(), args, kwds, NULL, &directCPPPointer, &ownership);
     if (PyErr_Occurred()) {
       return -1;
     }
     if (directCPPPointer) {
-      // change ownershipflag to be owned by PythonQt
+      // if this object is reference counted, we ref it:
+      PythonQtVoidPtrCB* refCB = self->classInfo()->referenceCountingRefCB();
+      if (refCB) {
+        (*refCB)(directCPPPointer);
+      }
+      // change ownership flag to be owned by PythonQt
       self->_ownedByPythonQt = true;
       self->_useQMetaTypeDestroy = false;
-      if (self->classInfo()->isCPPWrapper()) {
+      bool isQObject = !self->classInfo()->isCPPWrapper();
+      if (!isQObject) {
         self->_wrappedPtr = directCPPPointer;
         // TODO xxx: if there is a wrapper factory, we might want to generate a wrapper for our class?!
       } else {
@@ -181,6 +190,16 @@ int PythonQtInstanceWrapper_init(PythonQtInstanceWrapper * self, PyObject * args
           (*cb)(directCPPPointer, self);
           self->_isShellInstance = true;
         }
+      }
+      // if the constructor has a PythonQtPassThisOwnership parameter and that owner is not NULL,
+      // this wrapper is immediately owned by CPP
+      // (Example: QGraphicsItem(QGraphicsItem* parent), if parent != NULL, ownership needs to be passed
+      //  to C++ immediately)
+      // Alternatively, if it is a QObject and the object already has a parent when it is constructed,
+      // the ownership should be moved to C++ as well, so that the shell instance stays alive.
+      if (ownership == PassOwnershipToCPP ||
+          (isQObject && self->_obj && self->_obj->parent())) {
+        self->passOwnershipToCPP();
       }
     }
   } else {
@@ -282,6 +301,18 @@ static PyObject *PythonQtInstanceWrapper_richcompare(PythonQtInstanceWrapper* wr
     PyTuple_SET_ITEM(args, 0, other);
     PyObject* result = PythonQtSlotFunction_CallImpl(wrapper->classInfo(), wrapper->_obj, opSlot._slot, args, NULL, wrapper->_wrappedPtr);
     Py_DECREF(args);
+    if (result == NULL) {
+      // special handling of EQ and NE, if call fails we just return EQ == false / NE == true.
+      if (code == Py_EQ) {
+        PyErr_Clear();
+        Py_INCREF(Py_False);
+        return Py_False;
+      } else if (code == Py_NE) {
+        PyErr_Clear();
+        Py_INCREF(Py_True);
+        return Py_True;
+      }
+    }
     return result;
   } else {
     // not implemented, let python try something else!
@@ -357,8 +388,7 @@ static PyObject *PythonQtInstanceWrapper_getattro(PyObject *obj,PyObject *name)
     dict = PyDict_Copy(dict);
 
     if (wrapper->_obj) {
-      // only the properties are missing, the rest is already available from
-      // PythonQtClassWrapper...
+      // we need to replace the properties with their real values...
       QStringList l = wrapper->classInfo()->propertyList();
       Q_FOREACH (QString name, l) {
         PyObject* o = PyObject_GetAttrString(obj, name.toLatin1().data());
@@ -381,6 +411,25 @@ static PyObject *PythonQtInstanceWrapper_getattro(PyObject *obj,PyObject *name)
         }
       }
     }
+
+    {
+      static const QByteArray dynamicDictString("py_dynamic_dict");
+      // check for a dynamic dict getter slot
+      PythonQtMemberInfo member = wrapper->classInfo()->member(dynamicDictString);
+      if (member._type == PythonQtMemberInfo::Slot) {
+        PyObject* args = PyTuple_New(0);
+        PyObject* result = PythonQtSlotFunction_CallImpl(wrapper->classInfo(), wrapper->_obj, member._slot, args, NULL, wrapper->_wrappedPtr);
+        Py_DECREF(args);
+        if (result) {
+          if (PyDict_Check(result)) {
+            PyDict_Merge(dict, result, false);
+          } else {
+            std::cerr << "py_dynamic_dict() should return a dictionary!" << std::endl; 
+          }
+        }
+      }
+    }
+
     // Note: we do not put children into the dict, is would look confusing?!
     return dict;
   }
